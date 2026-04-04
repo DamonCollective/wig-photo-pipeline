@@ -49,7 +49,8 @@ def save_log(log: dict):
 
 
 def open_image(path: Path):
-    """Open image, with HEIC support if pillow-heif is installed."""
+    """Open image with HEIC support and EXIF auto-rotation."""
+    from PIL import Image, ImageOps
     suffix = path.suffix.lower()
     if suffix in {".heic", ".heif"}:
         try:
@@ -58,8 +59,8 @@ def open_image(path: Path):
         except ImportError:
             print(f"  SKIP {path.name}: HEIC support requires pillow-heif (pip install pillow-heif)")
             return None
-    from PIL import Image
-    return Image.open(path)
+    img = Image.open(path)
+    return ImageOps.exif_transpose(img)  # corrects rotation from EXIF orientation tag
 
 
 def remove_bg_square(input_path: Path):
