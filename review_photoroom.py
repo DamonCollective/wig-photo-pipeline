@@ -151,16 +151,19 @@ def main():
             open_image_viewer(preview_path)
             time.sleep(1)
 
-            # User types names
+            # User types names (or 's' to send to SKIPPED)
             print()
-            folder_name = input("  Folder name (e.g. GRAY COUNT 1800): ").strip()
-            seo_slug    = input("  SEO slug    (e.g. gray-georgian-court-wig-1800): ").strip().lower().replace(" ", "-")
+            folder_name = input("  Folder name (e.g. GRAY COUNT 1800) or 's' to skip: ").strip()
+
+            if folder_name.lower() == "s":
+                folder_name = "SKIPPED"
+                seo_slug    = "skipped"
+            else:
+                seo_slug = input("  SEO slug    (e.g. gray-georgian-court-wig-1800): ").strip().lower().replace(" ", "-")
 
             if not folder_name or not seo_slug:
-                ans = input("  Empty name — skip this group? (y/n): ").strip().lower()
-                if ans == "y":
-                    print("  Skipped.\n")
-                    continue
+                print("  Empty name — skipping.\n")
+                continue
 
             # Download all images in group
             group_dir = tmp / "group"
