@@ -10,7 +10,8 @@
   },
 
   "_imac_example": {
-    "source": "/home/kostas/damon_drive/iphone_photos",
+    "_note": "On iMac use imac_run.sh — it sets 'source' automatically via rclone mount. Only set 'dest'.",
+    "source": "(set by imac_run.sh)",
     "dest":   "/home/kostas/gdrive/My Products"
   }
 }
