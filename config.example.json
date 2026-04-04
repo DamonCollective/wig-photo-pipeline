@@ -1,0 +1,16 @@
+{
+  "_comment": "Copy this file to config.json (gitignored) and set the paths for this machine.",
+
+  "source": "/path/to/iphone_photos",
+  "dest":   "/path/to/My Products",
+
+  "_windows_example": {
+    "source": "G:/My Drive/iphone_photos",
+    "dest":   "H:/My Drive/My Products"
+  },
+
+  "_imac_example": {
+    "source": "/home/kostas/damon_drive/iphone_photos",
+    "dest":   "/home/kostas/gdrive/My Products"
+  }
+}
