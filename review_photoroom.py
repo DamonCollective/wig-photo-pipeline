@@ -2,13 +2,14 @@
 """
 review_photoroom.py — Interactive review, naming, and organizing of PHOTOROOM images.
 
-For each group of images (grouped by 1-minute timestamp gap):
-  1. Downloads the first image from Drive and opens it in your image viewer
-  2. You type a folder name and SEO slug
-  3. Downloads all images in the group
-  4. Renames: seo-name-01.png, 02.png ...
-  5. Uploads to My Products/[FOLDER NAME]/ on Drive
-  6. Saves progress — safe to interrupt and resume
+Main thread: shows preview → gets your input → moves to next group immediately.
+Background worker: downloads all images, saves locally, uploads to Drive.
+
+Keys:
+  <name>  → folder name, then SEO slug
+  s       → send to SKIPPED folder
+  x       → ignore completely (mark done, no upload)
+  p       → same folder as previous group
 
 Usage:
   python3 review_photoroom.py
@@ -16,11 +17,13 @@ Usage:
 
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,9 +32,19 @@ PROGRESS_FILE        = Path(__file__).parent / "photoroom_progress.json"
 PHOTOROOM_REMOTE     = "Gdrive_M:PHOTOROOM"
 MYPRODUCTS_FOLDER_ID = "13M2tnha_H5-mV2qKU1RC_3YtCW2xQHwr"
 WORKSPACE            = Path.home() / "wig_workspace"
-GAP_SECONDS          = 60   # images more than 60s apart = different wig
+GAP_SECONDS          = 60
 
-# ── progress tracking ──────────────────────────────────────────────────────────
+# ── thread-safe print ──────────────────────────────────────────────────────────
+
+_print_lock = threading.Lock()
+
+def tprint(*args, **kwargs):
+    with _print_lock:
+        print(*args, **kwargs)
+
+# ── progress ───────────────────────────────────────────────────────────────────
+
+_progress_lock = threading.Lock()
 
 def load_progress() -> dict:
     if PROGRESS_FILE.exists():
@@ -40,10 +53,11 @@ def load_progress() -> dict:
     return {"done_groups": []}
 
 def save_progress(progress: dict):
-    with open(PROGRESS_FILE, "w") as f:
-        json.dump(progress, f, indent=2)
+    with _progress_lock:
+        with open(PROGRESS_FILE, "w") as f:
+            json.dump(progress, f, indent=2)
 
-# ── timestamp parsing ──────────────────────────────────────────────────────────
+# ── timestamp / grouping ───────────────────────────────────────────────────────
 
 def parse_timestamp(filename: str) -> datetime | None:
     m = re.search(r"IMG_(\d{8})_(\d{6})", filename)
@@ -54,17 +68,9 @@ def parse_timestamp(filename: str) -> datetime | None:
     except ValueError:
         return None
 
-# ── grouping ───────────────────────────────────────────────────────────────────
-
 def group_by_gap(files: list[str], gap_seconds: int) -> list[list[str]]:
-    timestamped = []
-    for f in files:
-        ts = parse_timestamp(f)
-        if ts:
-            timestamped.append((ts, f))
-
+    timestamped = [(parse_timestamp(f), f) for f in files if parse_timestamp(f)]
     timestamped.sort(key=lambda x: x[0])
-
     groups, current, last_ts = [], [], None
     for ts, f in timestamped:
         if last_ts is None or (ts - last_ts).total_seconds() > gap_seconds:
@@ -76,7 +82,6 @@ def group_by_gap(files: list[str], gap_seconds: int) -> list[list[str]]:
         last_ts = ts
     if current:
         groups.append(current)
-
     return groups
 
 # ── image viewer ───────────────────────────────────────────────────────────────
@@ -89,7 +94,7 @@ def open_image_viewer(path: Path):
     else:
         subprocess.Popen(["xdg-open", str(path)])
 
-# ── rclone helpers ─────────────────────────────────────────────────────────────
+# ── rclone ─────────────────────────────────────────────────────────────────────
 
 def rclone_download(remote_path: str, local_path: Path):
     subprocess.run(
@@ -99,14 +104,57 @@ def rclone_download(remote_path: str, local_path: Path):
 
 def rclone_upload(local_dir: Path, folder_name: str):
     subprocess.run(
-        [
-            "rclone", "copy", str(local_dir),
-            f"Gdrive_M:{folder_name}",
-            "--drive-root-folder-id", MYPRODUCTS_FOLDER_ID,
-            "-P",
-        ],
-        check=True,
+        ["rclone", "copy", str(local_dir),
+         f"Gdrive_M:{folder_name}",
+         "--drive-root-folder-id", MYPRODUCTS_FOLDER_ID],
+        check=True, capture_output=True
     )
+
+# ── background worker ──────────────────────────────────────────────────────────
+
+def worker(work_queue: queue.Queue, progress: dict):
+    """Runs in background: download → save local → upload → mark done."""
+    while True:
+        item = work_queue.get()
+        if item is None:
+            work_queue.task_done()
+            break
+
+        group, folder_name, seo_slug, start_i, first = item
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            group_dir = Path(tmpdir)
+
+            # Download all images
+            tprint(f"\n  [↑ {folder_name}] Downloading {len(group)} image(s) ...")
+            ok = 0
+            for i, fname in enumerate(group, start_i):
+                out = group_dir / f"{seo_slug}-{i:02d}.png"
+                try:
+                    rclone_download(f"{PHOTOROOM_REMOTE}/{fname}", out)
+                    ok += 1
+                except subprocess.CalledProcessError:
+                    tprint(f"  [↑ {folder_name}] FAILED: {fname}")
+
+            # Save local copy
+            if folder_name != "SKIPPED":
+                local_dest = WORKSPACE / folder_name
+                local_dest.mkdir(parents=True, exist_ok=True)
+                for f in group_dir.iterdir():
+                    shutil.copy2(f, local_dest / f.name)
+
+            # Upload to Drive
+            try:
+                rclone_upload(group_dir, folder_name)
+                tprint(f"  [↑ {folder_name}] Done — {ok} file(s) uploaded.")
+            except subprocess.CalledProcessError as e:
+                tprint(f"  [↑ {folder_name}] Upload FAILED: {e}")
+                work_queue.task_done()
+                continue
+
+        progress["done_groups"].append(first)
+        save_progress(progress)
+        work_queue.task_done()
 
 # ── main ───────────────────────────────────────────────────────────────────────
 
@@ -132,20 +180,23 @@ def main():
         print("All groups processed!")
         return
 
+    # Start background worker
+    work_queue = queue.Queue()
+    t = threading.Thread(target=worker, args=(work_queue, progress), daemon=True)
+    t.start()
+
+    prev_folder = None
+    prev_seo    = None
+    prev_count  = 0
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        prev_folder = None
-        prev_seo    = None
-        prev_count  = 0   # how many images already uploaded to prev folder
 
         for idx, group in enumerate(pending, 1):
             first    = group[0]
-            last_of_group = group[-1]
             ts_first = parse_timestamp(first)
-            ts_last  = parse_timestamp(last_of_group)
             ts_str   = ts_first.strftime("%H:%M:%S") if ts_first else "?"
 
-            # Show gap from previous group
             gap_str = ""
             if idx > 1 and ts_first:
                 prev_last_ts = parse_timestamp(pending[idx - 2][-1])
@@ -153,10 +204,10 @@ def main():
                     gap = int((ts_first - prev_last_ts).total_seconds())
                     gap_str = f"  ← {gap}s after previous"
 
-            print(f"─── Group {idx}/{len(pending)}  ({len(group)} image(s), starts {ts_str}){gap_str} ───")
+            print(f"\n─── Group {idx}/{len(pending)}  ({len(group)} image(s), starts {ts_str}){gap_str} ───")
 
-            # Download and show first image
-            preview_path = tmp / "preview.png"
+            # Download preview (just first image)
+            preview_path = tmp / f"preview_{idx}.png"
             try:
                 rclone_download(f"{PHOTOROOM_REMOTE}/{first}", preview_path)
             except subprocess.CalledProcessError:
@@ -166,19 +217,18 @@ def main():
             open_image_viewer(preview_path)
             time.sleep(1)
 
-            # User types names
-            print()
+            # Get user input
             if prev_folder:
-                prompt = f"  Folder name / 's' skip / 'x' ignore / 'p' same as previous ({prev_folder}): "
+                prompt = f"  Name / 's' skip / 'x' ignore / 'p' = {prev_folder}: "
             else:
-                prompt = "  Folder name (e.g. GRAY COUNT 1800) / 's' skip / 'x' ignore: "
+                prompt = "  Folder name / 's' skip / 'x' ignore: "
 
             folder_name = input(prompt).strip()
 
             if folder_name.lower() == "x":
                 progress["done_groups"].append(first)
                 save_progress(progress)
-                print("  Ignored.\n")
+                print("  Ignored.")
                 continue
 
             elif folder_name.lower() == "s":
@@ -188,56 +238,21 @@ def main():
             elif folder_name.lower() == "p" and prev_folder:
                 folder_name = prev_folder
                 seo_slug    = prev_seo
-                # Continue numbering from where previous group left off
-                prev_count += 0   # will be set below
 
             else:
-                seo_slug = input("  SEO slug    (e.g. gray-georgian-court-wig-1800): ").strip().lower().replace(" ", "-")
+                seo_slug = input("  SEO slug: ").strip().lower().replace(" ", "-")
 
             if not folder_name or not seo_slug:
-                print("  Empty name — skipping.\n")
+                print("  Empty — skipping.")
                 continue
 
-            # Starting index: if merging with previous, continue numbering
+            # Starting index
             if folder_name == prev_folder and folder_name != "SKIPPED":
                 start_i = prev_count + 1
             else:
                 start_i = 1
 
-            # Download all images in group
-            group_dir = tmp / "group"
-            group_dir.mkdir(exist_ok=True)
-
-            print(f"  Downloading {len(group)} image(s) ...")
-            for i, fname in enumerate(group, start_i):
-                out = group_dir / f"{seo_slug}-{i:02d}.png"
-                try:
-                    rclone_download(f"{PHOTOROOM_REMOTE}/{fname}", out)
-                    print(f"    {fname} → {out.name}")
-                except subprocess.CalledProcessError:
-                    print(f"    FAILED: {fname}")
-
-            # Save local copy to ~/wig_workspace/[folder_name]/
-            if folder_name != "SKIPPED":
-                local_dest = WORKSPACE / folder_name
-                local_dest.mkdir(parents=True, exist_ok=True)
-                for f in group_dir.iterdir():
-                    shutil.copy2(f, local_dest / f.name)
-                print(f"  Local copy: {local_dest}")
-
-            # Upload to Drive
-            print(f"  Uploading to My Products/{folder_name}/ ...")
-            try:
-                rclone_upload(group_dir, folder_name)
-            except subprocess.CalledProcessError as e:
-                print(f"  Upload FAILED: {e}")
-                shutil.rmtree(group_dir)
-                continue
-
-            shutil.rmtree(group_dir)
-            group_dir.mkdir()
-
-            # Update previous group tracking
+            # Update prev tracking
             if folder_name != "SKIPPED":
                 if folder_name == prev_folder:
                     prev_count += len(group)
@@ -246,11 +261,16 @@ def main():
                     prev_seo    = seo_slug
                     prev_count  = len(group)
 
-            progress["done_groups"].append(first)
-            save_progress(progress)
-            print(f"  Saved. My Products/{folder_name}/\n")
+            # Queue the work — background thread handles the rest
+            work_queue.put((group, folder_name, seo_slug, start_i, first))
+            print(f"  Queued → My Products/{folder_name}/  (processing in background)")
 
-    print("Session complete.")
+    # Wait for all background jobs to finish
+    work_queue.put(None)
+    print("\nWaiting for background uploads to finish ...")
+    work_queue.join()
+    t.join()
+    print("All done.")
 
 
 if __name__ == "__main__":
