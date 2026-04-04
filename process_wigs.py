@@ -16,12 +16,13 @@ Install deps:
 """
 
 import json
+import os
 import sys
 import io
 from datetime import date
 from pathlib import Path
 
-CONFIG_FILE = Path(__file__).parent / "config.json"
+CONFIG_FILE = Path(os.environ.get("CONFIG_FILE", Path(__file__).parent / "config.json"))
 LOG_FILE    = Path(__file__).parent / "processed.json"
 
 SUPPORTED = {".jpg", ".jpeg", ".png", ".heic", ".heif"}

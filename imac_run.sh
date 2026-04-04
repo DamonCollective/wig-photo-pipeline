@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# imac_run.sh — mounts damoncollective Drive, runs process_wigs.py, unmounts.
+# imac_run.sh — downloads new images from Gdrive_M, runs rembg pipeline, uploads results.
 #
-# One-time setup (run once, not needed again):
-#   rclone config
-#   → New remote → name: Gdrive_D → type: drive → sign in as damoncollective@gmail.com
+# Source:  Gdrive_M:ΔΑΜΩΝ/iphone_photos
+# Dest:    My Products folder (Drive ID: 13M2tnha_H5-mV2qKU1RC_3YtCW2xQHwr)
 #
 # Usage:
 #   chmod +x imac_run.sh
@@ -11,75 +10,66 @@
 
 set -euo pipefail
 
-REMOTE="Gdrive_D:ΔΑΜΩΝ/iphone_photos"
-MOUNT_POINT="$HOME/damon_drive_mount"
+REMOTE="Gdrive_M"
+SOURCE_PATH="ΔΑΜΩΝ/iphone_photos"
+DEST_FOLDER_ID="13M2tnha_H5-mV2qKU1RC_3YtCW2xQHwr"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="${PYTHON:-python3}"
 
-# ── helpers ────────────────────────────────────────────────────────────────────
+LOCAL_SOURCE="/tmp/wig_pipeline_source"
+LOCAL_DEST="/tmp/wig_pipeline_dest"
 
-is_mounted() {
-    mountpoint -q "$MOUNT_POINT" 2>/dev/null || \
-    mount | grep -q "$MOUNT_POINT"
+# ── cleanup on exit ────────────────────────────────────────────────────────────
+cleanup() {
+    rm -rf "$LOCAL_SOURCE" "$LOCAL_DEST"
 }
+trap cleanup EXIT
 
-unmount() {
-    if is_mounted; then
-        echo "Unmounting $MOUNT_POINT ..."
-        fusermount -uz "$MOUNT_POINT" 2>/dev/null || umount "$MOUNT_POINT" 2>/dev/null || true
-    fi
-    rmdir "$MOUNT_POINT" 2>/dev/null || true
+# ── 1. download new images from Drive ─────────────────────────────────────────
+echo "→ Syncing images from Drive..."
+mkdir -p "$LOCAL_SOURCE"
+rclone copy "${REMOTE}:${SOURCE_PATH}" "$LOCAL_SOURCE" \
+    --include "*.jpg" --include "*.jpeg" --include "*.png" \
+    --include "*.heic" --include "*.heif" \
+    -P
+
+COUNT=$(find "$LOCAL_SOURCE" -maxdepth 1 -type f | wc -l)
+if [ "$COUNT" -eq 0 ]; then
+    echo "No images found in iphone_photos. Nothing to do."
+    exit 0
+fi
+echo "  Downloaded $COUNT image(s)."
+
+# ── 2. write a temp config.json pointing to local folders ─────────────────────
+mkdir -p "$LOCAL_DEST"
+TEMP_CONFIG=$(mktemp /tmp/wig_config_XXXX.json)
+cat > "$TEMP_CONFIG" <<EOF
+{
+  "source": "$LOCAL_SOURCE",
+  "dest":   "$LOCAL_DEST"
 }
+EOF
 
-# Always unmount on exit (even on error or Ctrl-C)
-trap unmount EXIT
+# ── 3. run the pipeline ───────────────────────────────────────────────────────
+echo ""
+CONFIG_FILE="$TEMP_CONFIG" $PYTHON "$SCRIPT_DIR/process_wigs.py"
+rm -f "$TEMP_CONFIG"
 
-# ── mount ──────────────────────────────────────────────────────────────────────
+# ── 4. upload processed PNGs to My Products on Drive ─────────────────────────
+TODAY=$(date +%Y-%m-%d)
+OUT_SUBDIR="$LOCAL_DEST/$TODAY"
 
-mkdir -p "$MOUNT_POINT"
-
-if is_mounted; then
-    echo "Already mounted at $MOUNT_POINT — reusing."
-else
-    echo "Mounting $REMOTE → $MOUNT_POINT ..."
-    rclone mount "$REMOTE" "$MOUNT_POINT" \
-        --read-only \
-        --vfs-cache-mode full \
-        --vfs-cache-max-age 1h \
-        --daemon \
-        --daemon-timeout 60s
-
-    # Wait until the mount is ready (up to 15s)
-    for i in $(seq 1 15); do
-        if is_mounted; then break; fi
-        sleep 1
-    done
-
-    if ! is_mounted; then
-        echo "ERROR: Mount did not come up in time. Check: rclone listremotes"
-        exit 1
-    fi
-    echo "Mounted OK."
+if [ ! -d "$OUT_SUBDIR" ] || [ -z "$(ls -A "$OUT_SUBDIR" 2>/dev/null)" ]; then
+    echo "No output to upload."
+    exit 0
 fi
-
-# ── update config.json source path on the fly ─────────────────────────────────
-
-CONFIG="$SCRIPT_DIR/config.json"
-if [ ! -f "$CONFIG" ]; then
-    echo "ERROR: config.json not found. Copy config.example.json → config.json and set 'dest'."
-    exit 1
-fi
-
-# Patch the source key to point to the mount (non-destructive — only changes source)
-$PYTHON - <<PYEOF
-import json, pathlib
-cfg_path = pathlib.Path("$CONFIG")
-cfg = json.loads(cfg_path.read_text())
-cfg["source"] = "$MOUNT_POINT"
-cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
-PYEOF
-
-# ── run pipeline ───────────────────────────────────────────────────────────────
 
 echo ""
-$PYTHON "$SCRIPT_DIR/process_wigs.py"
+echo "→ Uploading to Google Drive / My Products / $TODAY ..."
+rclone copy "$OUT_SUBDIR" "${REMOTE}:$TODAY" \
+    --drive-root-folder-id "$DEST_FOLDER_ID" \
+    -P
+
+echo ""
+echo "Done. Check: https://drive.google.com/drive/folders/${DEST_FOLDER_ID}"
