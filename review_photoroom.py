@@ -133,12 +133,26 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
+        prev_folder = None
+        prev_seo    = None
+        prev_count  = 0   # how many images already uploaded to prev folder
 
         for idx, group in enumerate(pending, 1):
-            first = group[0]
-            ts = parse_timestamp(first)
-            ts_str = ts.strftime("%H:%M:%S") if ts else "?"
-            print(f"─── Group {idx}/{len(pending)}  ({len(group)} image(s), starts {ts_str}) ───")
+            first    = group[0]
+            last_of_group = group[-1]
+            ts_first = parse_timestamp(first)
+            ts_last  = parse_timestamp(last_of_group)
+            ts_str   = ts_first.strftime("%H:%M:%S") if ts_first else "?"
+
+            # Show gap from previous group
+            gap_str = ""
+            if idx > 1 and ts_first:
+                prev_last_ts = parse_timestamp(pending[idx - 2][-1])
+                if prev_last_ts:
+                    gap = int((ts_first - prev_last_ts).total_seconds())
+                    gap_str = f"  ← {gap}s after previous"
+
+            print(f"─── Group {idx}/{len(pending)}  ({len(group)} image(s), starts {ts_str}){gap_str} ───")
 
             # Download and show first image
             preview_path = tmp / "preview.png"
@@ -151,13 +165,25 @@ def main():
             open_image_viewer(preview_path)
             time.sleep(1)
 
-            # User types names (or 's' to send to SKIPPED)
+            # User types names
             print()
-            folder_name = input("  Folder name (e.g. GRAY COUNT 1800) or 's' to skip: ").strip()
+            if prev_folder:
+                prompt = f"  Folder name, 's' to skip, or 'p' for same as previous ({prev_folder}): "
+            else:
+                prompt = "  Folder name (e.g. GRAY COUNT 1800) or 's' to skip: "
+
+            folder_name = input(prompt).strip()
 
             if folder_name.lower() == "s":
                 folder_name = "SKIPPED"
                 seo_slug    = "skipped"
+
+            elif folder_name.lower() == "p" and prev_folder:
+                folder_name = prev_folder
+                seo_slug    = prev_seo
+                # Continue numbering from where previous group left off
+                prev_count += 0   # will be set below
+
             else:
                 seo_slug = input("  SEO slug    (e.g. gray-georgian-court-wig-1800): ").strip().lower().replace(" ", "-")
 
@@ -165,12 +191,18 @@ def main():
                 print("  Empty name — skipping.\n")
                 continue
 
+            # Starting index: if merging with previous, continue numbering
+            if folder_name == prev_folder and folder_name != "SKIPPED":
+                start_i = prev_count + 1
+            else:
+                start_i = 1
+
             # Download all images in group
             group_dir = tmp / "group"
             group_dir.mkdir(exist_ok=True)
 
             print(f"  Downloading {len(group)} image(s) ...")
-            for i, fname in enumerate(group, 1):
+            for i, fname in enumerate(group, start_i):
                 out = group_dir / f"{seo_slug}-{i:02d}.png"
                 try:
                     rclone_download(f"{PHOTOROOM_REMOTE}/{fname}", out)
@@ -189,6 +221,15 @@ def main():
 
             shutil.rmtree(group_dir)
             group_dir.mkdir()
+
+            # Update previous group tracking
+            if folder_name != "SKIPPED":
+                if folder_name == prev_folder:
+                    prev_count += len(group)
+                else:
+                    prev_folder = folder_name
+                    prev_seo    = seo_slug
+                    prev_count  = len(group)
 
             progress["done_groups"].append(first)
             save_progress(progress)
