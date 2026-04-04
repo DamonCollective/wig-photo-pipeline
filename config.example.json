@@ -1,5 +1,6 @@
 {
   "_comment": "Copy this file to config.json (gitignored) and set the paths for this machine.",
+  "anthropic_api_key": "sk-ant-...",
 
   "source": "/path/to/iphone_photos",
   "dest":   "/path/to/My Products",
