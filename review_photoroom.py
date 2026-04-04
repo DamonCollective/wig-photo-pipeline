@@ -168,13 +168,19 @@ def main():
             # User types names
             print()
             if prev_folder:
-                prompt = f"  Folder name, 's' to skip, or 'p' for same as previous ({prev_folder}): "
+                prompt = f"  Folder name / 's' skip / 'x' ignore / 'p' same as previous ({prev_folder}): "
             else:
-                prompt = "  Folder name (e.g. GRAY COUNT 1800) or 's' to skip: "
+                prompt = "  Folder name (e.g. GRAY COUNT 1800) / 's' skip / 'x' ignore: "
 
             folder_name = input(prompt).strip()
 
-            if folder_name.lower() == "s":
+            if folder_name.lower() == "x":
+                progress["done_groups"].append(first)
+                save_progress(progress)
+                print("  Ignored.\n")
+                continue
+
+            elif folder_name.lower() == "s":
                 folder_name = "SKIPPED"
                 seo_slug    = "skipped"
 
