@@ -28,6 +28,7 @@ from pathlib import Path
 PROGRESS_FILE        = Path(__file__).parent / "photoroom_progress.json"
 PHOTOROOM_REMOTE     = "Gdrive_M:PHOTOROOM"
 MYPRODUCTS_FOLDER_ID = "13M2tnha_H5-mV2qKU1RC_3YtCW2xQHwr"
+WORKSPACE            = Path.home() / "wig_workspace"
 GAP_SECONDS          = 60   # images more than 60s apart = different wig
 
 # ── progress tracking ──────────────────────────────────────────────────────────
@@ -216,7 +217,15 @@ def main():
                 except subprocess.CalledProcessError:
                     print(f"    FAILED: {fname}")
 
-            # Upload
+            # Save local copy to ~/wig_workspace/[folder_name]/
+            if folder_name != "SKIPPED":
+                local_dest = WORKSPACE / folder_name
+                local_dest.mkdir(parents=True, exist_ok=True)
+                for f in group_dir.iterdir():
+                    shutil.copy2(f, local_dest / f.name)
+                print(f"  Local copy: {local_dest}")
+
+            # Upload to Drive
             print(f"  Uploading to My Products/{folder_name}/ ...")
             try:
                 rclone_upload(group_dir, folder_name)
