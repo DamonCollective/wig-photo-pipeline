@@ -127,7 +127,7 @@ def main():
     existing_count = len(list(out_dir.glob("*.png")))
     start_idx = existing_count + 1
 
-    print(f"Processing {len(new_images)} image(s) → {out_dir}\n")
+    print(f"Processing {len(new_images)} image(s) -> {out_dir}\n")
 
     processed_this_run = []
 
