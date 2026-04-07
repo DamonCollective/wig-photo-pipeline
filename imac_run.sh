@@ -30,8 +30,10 @@ trap cleanup EXIT
 echo "→ Syncing images from Drive..."
 mkdir -p "$LOCAL_SOURCE"
 rclone copy "${REMOTE}:${SOURCE_PATH}" "$LOCAL_SOURCE" \
-    --include "*.jpg" --include "*.jpeg" --include "*.png" \
+    --include "*.jpg"  --include "*.jpeg" --include "*.png" \
     --include "*.heic" --include "*.heif" \
+    --include "*.JPG"  --include "*.JPEG" --include "*.PNG" \
+    --include "*.HEIC" --include "*.HEIF" \
     -P
 
 COUNT=$(find "$LOCAL_SOURCE" -maxdepth 1 -type f | wc -l)
