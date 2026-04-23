@@ -22,6 +22,11 @@ import io
 from datetime import date
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 CONFIG_FILE = Path(os.environ.get("CONFIG_FILE", Path(__file__).parent / "config.json"))
 LOG_FILE    = Path(__file__).parent / "processed.json"
 
@@ -32,7 +37,7 @@ def load_config():
     if not CONFIG_FILE.exists():
         print("config.json not found. Copy config.example.json → config.json and fill in your paths.")
         sys.exit(1)
-    with open(CONFIG_FILE) as f:
+    with open(CONFIG_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
